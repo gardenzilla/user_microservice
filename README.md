@@ -1,2 +1,2 @@
 # user_microservice
-User microservice
+Demo microservice for gardenzilla
