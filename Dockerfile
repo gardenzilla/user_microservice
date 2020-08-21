@@ -16,7 +16,7 @@ COPY ./target/release/user_microservice /usr/local/bin/user_microservice
 RUN apt-get update && apt-get install -y
 RUN apt-get install curl -y
 CMD ["user_microservice"]
-EXPOSE 50051/tcp
+# EXPOSE 50051/tcp
 
 # FROM alpine:latest
 # WORKDIR /usr/src/app

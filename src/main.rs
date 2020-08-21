@@ -117,6 +117,27 @@ impl User for UserService {
     ) -> Result<Response<ReserPasswordResponse>, Status> {
         todo!()
     }
+    async fn validate_login(
+        &self,
+        request: Request<LoginRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let req = request.into_inner();
+        match self
+            .users
+            .lock()
+            .map_err(|_| Status::internal("Error while locking"))?
+            .find_id(&req.username)
+        {
+            Ok(user) => match password::verify_password_from_hash(
+                &req.password,
+                user.unpack().get_password_hash(),
+            ) {
+                Ok(res) => return Ok(Response::new(LoginResponse { is_valid: res })),
+                Err(_) => return Ok(Response::new(LoginResponse { is_valid: false })),
+            },
+            Err(_) => return Ok(Response::new(LoginResponse { is_valid: false })),
+        };
+    }
 }
 
 #[tokio::main]
