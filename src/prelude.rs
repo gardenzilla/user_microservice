@@ -53,7 +53,10 @@ impl From<ServiceError> for ::tonic::Status {
 
 impl From<::storaget::PackError> for ServiceError {
     fn from(error: ::storaget::PackError) -> Self {
-        ServiceError::internal_error(&error.to_string())
+        match error {
+            ::storaget::PackError::ObjectNotFound => ServiceError::not_found(&error.to_string()),
+            _ => ServiceError::internal_error(&error.to_string()),
+        }
     }
 }
 

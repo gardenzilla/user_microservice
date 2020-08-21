@@ -113,9 +113,30 @@ impl User for UserService {
     }
     async fn reset_password(
         &self,
-        _request: Request<ReserPasswordRequest>,
+        request: Request<ReserPasswordRequest>,
     ) -> Result<Response<ReserPasswordResponse>, Status> {
-        todo!()
+        let req = request.into_inner();
+        let mut lock = self.users.lock().unwrap();
+        let user = lock
+            .find_id_mut(&req.userid)
+            .map_err(|e| ServiceError::from(e))?;
+        let mut _user = user.as_mut();
+        let _new_password = _user.reset_password();
+        // TODO!: Handle email sending from here!
+        Ok(Response::new(ReserPasswordResponse {}))
+    }
+    async fn set_new_password(
+        &self,
+        request: Request<NewPasswordRequest>,
+    ) -> Result<Response<NewPasswordResponse>, Status> {
+        let req = request.into_inner();
+        let mut lock = self.users.lock().unwrap();
+        let user = lock
+            .find_id_mut(&req.userid)
+            .map_err(|e| ServiceError::from(e))?;
+        user.as_mut().unpack().set_password(req.new_password)?;
+        // Todo: Maybe email about the new password event
+        Ok(Response::new(NewPasswordResponse {}))
     }
     async fn validate_login(
         &self,

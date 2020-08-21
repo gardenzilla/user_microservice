@@ -12,7 +12,7 @@ chrono = {version = "0.4", features = ["serde"]}
 futures = "*"
 # prelude = {git = "https://github.com/gardenzilla/prelude"}
 prost = "0.6"
-protos = {git = "https://github.com/gardenzilla/protos", tag = "0.2.0"}
+protos = {git = "https://github.com/gardenzilla/protos", tag = "0.2.1"}
 rand = "*"
 serde = {version = "1.0", features = ["derive"]}
 serde_yaml = "0.8"

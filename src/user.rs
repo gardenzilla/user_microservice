@@ -236,35 +236,10 @@ impl User {
     // TODO: Maybe should be at a higher level using User trait reference as input?
     // Maybe this?
     // => fn reset_password<T: User>(user: &T) -> Result<(), String> {...}
-    pub fn reset_password(&mut self) -> ServiceResult<()> {
-        // TODO!: Implement it using RPC service
-        // let new_password = generate_random_password(None)?;
-        // self.password_hash = hash_password(&new_password)?;
-        // match email::new(
-        //     &self.get_user_email(),
-        //     "Gardenova ÚJ JELSZÓ",
-        //     &format!(
-        //         "A felhasználói neved: {}\nAz új jelszavad: {}",
-        //         self.get_user_id(),
-        //         &new_password
-        //     ),
-        // )
-        // .send()
-        // {
-        //     Ok(_) => (),
-        //     // TODO:
-        //     // Use email pool, in case of email service failure.
-        //     // Instead of using ServiceError in case of ServiceError - directly here -,
-        //     // We should say its Ok(()) now, and in case of ServiceError, the email pool,
-        //     // should manage the trials.
-        //     Err(msg) => {
-        //         return Err(InternalServiceError(format!(
-        //             "Az új jelszó elkészült, de hiba az email elküldése során. A hibaüzenet: {}",
-        //             msg
-        //         )))
-        //     }
-        // }
-        Ok(())
+    pub fn reset_password(&mut self) -> ServiceResult<String> {
+        let new_password = generate_random_password(None)?;
+        self.password_hash = hash_password(&new_password)?;
+        Ok(new_password)
     }
 }
 
