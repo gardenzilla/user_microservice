@@ -82,14 +82,14 @@ impl User for UserService {
             Ok(u) => u,
             Err(err) => return Err(Status::not_found(format!("{}", err))),
         };
-        user.update(|u| {
-            u.set_user_name(_user.name.to_string()).unwrap();
-            u.set_user_email(_user.email.to_string()).unwrap();
-            u.set_user_phone(_user.phone.to_string()).unwrap();
-        })
-        .map_err(|_| Status::internal("Error while updating user object"))?;
+        let mut user_mut = user.as_mut();
+        let mut _user_mut = user_mut.unpack();
+        _user_mut.set_user_name(_user.name.to_string())?;
+        _user_mut.set_user_email(_user.email.to_string())?;
+        _user_mut.set_user_phone(_user.phone.to_string())?;
+
         let response = UpdateByIdResponse {
-            user: Some(user.unpack().into()),
+            user: Some(_user.into()),
         };
         return Ok(Response::new(response));
     }
