@@ -153,10 +153,25 @@ impl User for UserService {
                 &req.password,
                 user.unpack().get_password_hash(),
             ) {
-                Ok(res) => return Ok(Response::new(LoginResponse { is_valid: res })),
-                Err(_) => return Ok(Response::new(LoginResponse { is_valid: false })),
+                Ok(res) => {
+                    return Ok(Response::new(LoginResponse {
+                        is_valid: res,
+                        name: user.unpack().get_user_name().into(),
+                    }))
+                }
+                Err(_) => {
+                    return Ok(Response::new(LoginResponse {
+                        is_valid: false,
+                        name: "".into(),
+                    }))
+                }
             },
-            Err(_) => return Ok(Response::new(LoginResponse { is_valid: false })),
+            Err(_) => {
+                return Ok(Response::new(LoginResponse {
+                    is_valid: false,
+                    name: "".into(),
+                }))
+            }
         };
     }
 }
