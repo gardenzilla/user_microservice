@@ -191,7 +191,7 @@ async fn main() -> prelude::ServiceResult<()> {
             .expect("Error while loading users storage"),
     );
 
-    let email_client = EmailClient::connect("http://[::1]:50051")
+    let email_client = EmailClient::connect("http://[::1]:50053")
         .await
         .expect("Error while connecting to email service");
 
