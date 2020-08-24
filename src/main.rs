@@ -1,8 +1,12 @@
 use prelude::*;
+use protos::email::email_client::*;
+use protos::email::*;
 use protos::user::user_server::*;
 use protos::user::*;
-use std::{path::PathBuf, sync::Mutex};
+use std::path::PathBuf;
 use storaget::*;
+use tokio::sync::Mutex;
+use tonic::transport::Channel;
 use tonic::{transport::Server, Request, Response, Status};
 
 pub mod convert;
@@ -12,19 +16,23 @@ pub mod user;
 
 pub struct UserService {
     users: Mutex<VecPack<user::User>>,
+    email_client: Mutex<EmailClient<Channel>>,
 }
 
 impl UserService {
-    fn new(users: Mutex<VecPack<user::User>>) -> Self {
-        Self { users }
+    fn new(users: Mutex<VecPack<user::User>>, email_client: EmailClient<Channel>) -> Self {
+        Self {
+            users,
+            email_client: Mutex::new(email_client),
+        }
     }
-    fn create_new_user(&self, u: CreateNewRequest) -> ServiceResult<UserObj> {
-        if let Ok(_) = self.users.lock().unwrap().find_id(&u.username) {
+    async fn create_new_user(&self, u: CreateNewRequest) -> ServiceResult<UserObj> {
+        if let Ok(_) = self.users.lock().await.find_id(&u.username) {
             return Err(ServiceError::already_exist("User exist!"));
         }
         let new_user = user::User::new(u.username, u.name, u.email, u.phone, u.created_by)?;
         let user_obj: UserObj = (&new_user).into();
-        self.users.lock().unwrap().insert(new_user)?;
+        self.users.lock().await.insert(new_user)?;
         Ok(user_obj)
     }
 }
@@ -36,7 +44,7 @@ impl User for UserService {
         request: Request<CreateNewRequest>,
     ) -> Result<Response<CreateNewResponse>, Status> {
         Ok(Response::new(CreateNewResponse {
-            user: Some(self.create_new_user(request.into_inner())?),
+            user: Some(self.create_new_user(request.into_inner()).await?),
         }))
     }
     async fn get_all(&self, _request: Request<()>) -> Result<Response<GetAllResponse>, Status> {
@@ -44,7 +52,7 @@ impl User for UserService {
         let users = self
             .users
             .lock()
-            .map_err(|_| Status::internal("Lock error"))?
+            .await
             .into_iter()
             .map(|i: &mut Pack<user::User>| i.unpack().into())
             .collect::<Vec<UserObj>>();
@@ -58,7 +66,7 @@ impl User for UserService {
         let user: UserObj = self
             .users
             .lock()
-            .map_err(|_| Status::internal("lock error"))?
+            .await
             .find_id(&request.into_inner().userid)
             .map_err(|_| Status::not_found("User not found"))?
             .unpack()
@@ -74,10 +82,7 @@ impl User for UserService {
             Some(u) => u,
             None => return Err(Status::internal("Request has an empty user object")),
         };
-        let mut lock = self
-            .users
-            .lock()
-            .map_err(|_| Status::internal("Mutex lock error"))?;
+        let mut lock = self.users.lock().await;
         let user = match lock.find_id_mut(&_user.id) {
             Ok(u) => u,
             Err(err) => return Err(Status::not_found(format!("{}", err))),
@@ -100,7 +105,7 @@ impl User for UserService {
         let is_user = match self
             .users
             .lock()
-            .map_err(|_| Status::internal("Error while locking"))?
+            .await
             .find_id(&request.into_inner().userid)
         {
             Ok(_) => true,
@@ -116,7 +121,7 @@ impl User for UserService {
         request: Request<ReserPasswordRequest>,
     ) -> Result<Response<ReserPasswordResponse>, Status> {
         let req = request.into_inner();
-        let mut lock = self.users.lock().unwrap();
+        let mut lock = self.users.lock().await;
         let user = lock
             .find_id_mut(&req.userid)
             .map_err(|e| ServiceError::from(e))?;
@@ -130,12 +135,20 @@ impl User for UserService {
         request: Request<NewPasswordRequest>,
     ) -> Result<Response<NewPasswordResponse>, Status> {
         let req = request.into_inner();
-        let mut lock = self.users.lock().unwrap();
+        let mut lock = self.users.lock().await;
         let user = lock
             .find_id_mut(&req.userid)
             .map_err(|e| ServiceError::from(e))?;
         user.as_mut().unpack().set_password(req.new_password)?;
-        // Todo: Maybe email about the new password event
+        let u = user.unpack();
+        let mut email_service = self.email_client.lock().await;
+        email_service
+            .send_email(EmailRequest {
+                to: u.get_user_email().into(),
+                subject: "Új jelszó beállítva".into(),
+                body: "Új jelszó lett beállítva a Gardenzilla fiókodban.".into(),
+            })
+            .await?;
         Ok(Response::new(NewPasswordResponse {}))
     }
     async fn validate_login(
@@ -143,12 +156,7 @@ impl User for UserService {
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
         let req = request.into_inner();
-        match self
-            .users
-            .lock()
-            .map_err(|_| Status::internal("Error while locking"))?
-            .find_id(&req.username)
-        {
+        match self.users.lock().await.find_id(&req.username) {
             Ok(user) => match password::verify_password_from_hash(
                 &req.password,
                 user.unpack().get_password_hash(),
@@ -183,7 +191,11 @@ async fn main() -> prelude::ServiceResult<()> {
             .expect("Error while loading users storage"),
     );
 
-    let user_service = UserService::new(users);
+    let email_client = EmailClient::connect("http://[::1]:50051")
+        .await
+        .expect("Error while connecting to email service");
+
+    let user_service = UserService::new(users, email_client);
 
     let addr = "[::1]:50051".parse().unwrap();
 
