@@ -61,3 +61,9 @@ impl From<::storaget::PackError> for ServiceError {
 }
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
+
+impl From<std::env::VarError> for ServiceError {
+    fn from(error: std::env::VarError) -> Self {
+        ServiceError::internal_error(&format!("ENV KEY NOT FOUND. {}", error))
+    }
+}

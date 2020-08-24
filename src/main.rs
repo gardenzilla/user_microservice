@@ -186,22 +186,23 @@ impl User for UserService {
 
 #[tokio::main]
 async fn main() -> prelude::ServiceResult<()> {
+    let addr_user: String = std::env::var("ADDR_user_microservice")?;
+    let addr_email: String = std::env::var("ADDR_email_microservice")?;
+
     let users: Mutex<VecPack<user::User>> = Mutex::new(
         VecPack::try_load_or_init(PathBuf::from("data/users"))
             .expect("Error while loading users storage"),
     );
 
-    let email_client = EmailClient::connect("http://[::1]:50053")
+    let email_client = EmailClient::connect(addr_email)
         .await
         .expect("Error while connecting to email service");
 
     let user_service = UserService::new(users, email_client);
 
-    let addr = "[::1]:50051".parse().unwrap();
-
     Server::builder()
         .add_service(UserServer::new(user_service))
-        .serve(addr)
+        .serve(addr_user.parse().unwrap())
         .await
         .expect("Error while staring server"); // Todo implement ? from<?>
 
