@@ -121,24 +121,24 @@ impl User for UserService {
         request: Request<ReserPasswordRequest>,
     ) -> Result<Response<ReserPasswordResponse>, Status> {
         let req = request.into_inner();
-        let mut lock = self.users.lock().await;
-        let user = lock
-            .find_id_mut(&req.userid)
-            .map_err(|e| ServiceError::from(e))?;
-        let mut _user = user.as_mut();
-        let new_password = _user.reset_password()?;
 
-        // Send email
-        let mut email_service = self.email_client.lock().await;
-        email_service
-            .send_email(EmailRequest {
-                to: _user.get_user_email().into(),
-                subject: "Elfelejtett jelszó".into(),
-                body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
-            })
-            .await?;
+        for user in self.users.lock().await.as_vec_mut() {
+            if user.get_user_email() == &req.userid {
+                let new_password = user.as_mut().reset_password()?;
 
-        Ok(Response::new(ReserPasswordResponse {}))
+                // Send email
+                let mut email_service = self.email_client.lock().await;
+                email_service.send_email(EmailRequest {
+                    to: req.userid,
+                    subject: "Elfelejtett jelszó".into(),
+                    body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
+                }).await?;
+
+                return Ok(Response::new(ReserPasswordResponse {}));
+            }
+        }
+
+        Err(Status::not_found("A megadott email cím nem található"))
     }
     async fn set_new_password(
         &self,
