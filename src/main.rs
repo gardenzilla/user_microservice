@@ -126,8 +126,18 @@ impl User for UserService {
             .find_id_mut(&req.userid)
             .map_err(|e| ServiceError::from(e))?;
         let mut _user = user.as_mut();
-        let _new_password = _user.reset_password();
-        // TODO!: Handle email sending from here!
+        let new_password = _user.reset_password()?;
+
+        // Send email
+        let mut email_service = self.email_client.lock().await;
+        email_service
+            .send_email(EmailRequest {
+                to: _user.get_user_email().into(),
+                subject: "Elfelejtett jelszó".into(),
+                body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
+            })
+            .await?;
+
         Ok(Response::new(ReserPasswordResponse {}))
     }
     async fn set_new_password(
