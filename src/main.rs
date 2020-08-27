@@ -118,8 +118,8 @@ impl User for UserService {
     }
     async fn reset_password(
         &self,
-        request: Request<ReserPasswordRequest>,
-    ) -> Result<Response<ReserPasswordResponse>, Status> {
+        request: Request<ResetPasswordRequest>,
+    ) -> Result<Response<ResetPasswordResponse>, Status> {
         let req = request.into_inner();
 
         for user in self.users.lock().await.as_vec_mut() {
@@ -134,7 +134,7 @@ impl User for UserService {
                     body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
                 }).await?;
 
-                return Ok(Response::new(ReserPasswordResponse {}));
+                return Ok(Response::new(ResetPasswordResponse {}));
             }
         }
 
