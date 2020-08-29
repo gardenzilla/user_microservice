@@ -3,6 +3,7 @@ use protos::email::email_client::*;
 use protos::email::*;
 use protos::user::user_server::*;
 use protos::user::*;
+use std::error::Error;
 use std::path::PathBuf;
 use storaget::*;
 use tokio::sync::{oneshot, Mutex};
@@ -194,7 +195,7 @@ impl User for UserService {
 }
 
 #[tokio::main]
-async fn main() -> prelude::ServiceResult<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let users: Mutex<VecPack<user::User>> = Mutex::new(
         VecPack::try_load_or_init(PathBuf::from("data/users"))
             .expect("Error while loading users storage"),
@@ -215,11 +216,14 @@ async fn main() -> prelude::ServiceResult<()> {
     tokio::task::spawn(async move {
         Server::builder()
             .add_service(UserServer::new(user_service))
-            .serve_with_shutdown(addr, async { rx.await.unwrap() })
+            .serve_with_shutdown(addr, async {
+                let _ = rx.await;
+            })
             .await
+            .unwrap()
     });
 
-    tokio::signal::ctrl_c().await.unwrap();
+    tokio::signal::ctrl_c().await?;
 
     println!("SIGINT");
 
