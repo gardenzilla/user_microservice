@@ -37,7 +37,7 @@ pub struct User {
 
 impl From<User> for UserObj {
     fn from(user: User) -> Self {
-        UserObj {
+        Self {
             id: user.id,
             name: user.name,
             email: user.email,

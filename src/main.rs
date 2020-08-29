@@ -48,7 +48,6 @@ impl User for UserService {
         }))
     }
     async fn get_all(&self, _request: Request<()>) -> Result<Response<GetAllResponse>, Status> {
-        println!("New get all");
         let users = self
             .users
             .lock()
@@ -209,11 +208,23 @@ async fn main() -> prelude::ServiceResult<()> {
 
     let addr = "[::1]:50051".parse().unwrap();
 
-    Server::builder()
-        .add_service(UserServer::new(user_service))
-        .serve(addr)
-        .await
-        .expect("Error while staring server"); // Todo implement ? from<?>
+    // Create shutdown channel
+    let (tx, rx) = oneshot::channel();
+
+    // Spawn the server into a runtime
+    tokio::task::spawn(async move {
+        Server::builder()
+            .add_service(UserServer::new(user_service))
+            .serve_with_shutdown(addr, async { rx.await.unwrap() })
+            .await
+    });
+
+    tokio::signal::ctrl_c().await.unwrap();
+
+    println!("SIGINT");
+
+    // Send shutdown signal after SIGINT received
+    let _ = tx.send(());
 
     Ok(())
 }
