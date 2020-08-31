@@ -39,7 +39,8 @@ impl UserService {
 }
 
 #[tonic::async_trait]
-impl User for UserService {
+impl protos::user::user_server::User for UserService {
+    type GetAllStream = tokio::sync::mpsc::Receiver<Result<UserObj, Status>>;
     async fn create_new(
         &self,
         request: Request<CreateNewRequest>,
@@ -48,7 +49,7 @@ impl User for UserService {
             user: Some(self.create_new_user(request.into_inner()).await?),
         }))
     }
-    async fn get_all(&self, _request: Request<()>) -> Result<Response<GetAllResponse>, Status> {
+    async fn get_all(&self, _request: Request<()>) -> Result<Response<Self::GetAllStream>, Status> {
         let users = self
             .users
             .lock()
@@ -56,8 +57,14 @@ impl User for UserService {
             .into_iter()
             .map(|i: &mut Pack<user::User>| i.unpack().into())
             .collect::<Vec<UserObj>>();
-        let response = GetAllResponse { users: users };
-        return Ok(Response::new(response));
+
+        let (mut tx, rx) = tokio::sync::mpsc::channel(4);
+
+        for user in users {
+            tx.send(Ok(user)).await.unwrap();
+        }
+
+        return Ok(Response::new(rx));
     }
     async fn get_by_id(
         &self,
