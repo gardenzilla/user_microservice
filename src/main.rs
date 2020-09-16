@@ -4,6 +4,7 @@ use protos::email::email_client::*;
 use protos::email::*;
 use protos::user::user_server::*;
 use protos::user::*;
+use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use tokio::sync::{oneshot, Mutex};
@@ -16,25 +17,81 @@ pub mod prelude;
 pub mod user;
 
 pub struct UserService {
+  next_id: Mutex<u32>,
+  lookup_table: Mutex<HashMap<String, u32>>,
   users: Mutex<VecPack<user::User>>,
   email_client: Mutex<EmailClient<Channel>>,
 }
 
 impl UserService {
-  fn new(users: Mutex<VecPack<user::User>>, email_client: EmailClient<Channel>) -> Self {
-    Self {
-      users,
+  fn init(
+    users: VecPack<user::User>,         // User db
+    email_client: EmailClient<Channel>, // Email service client
+  ) -> UserService {
+    // Define the next id
+    // Iterate over the users
+    // and fold till the biggest id
+    let next_id: u32 = users.iter().fold(0u32, |prev_id, c| {
+      let id = c.unpack().get_id();
+      if *id > prev_id {
+        // return the current id as
+        // that bigger then the previous one
+        *id
+      } else {
+        // return the previous id
+        prev_id
+      }
+    }) + 1; // biggest found ID + 1 is the next ID
+
+    // Lookup table to store
+    // user aliases
+    // Store user alias and user id
+    //            =====          ==
+    let mut lookup: HashMap<String, u32> = HashMap::new();
+
+    // Build up lookup table
+    // for aliases
+    users
+      .iter()
+      .map(|c| {
+        let c = c.unpack();
+        (c.get_user_alias().to_string(), *c.get_id())
+      })
+      .for_each(|o| {
+        let _ = lookup.insert(o.0, o.1);
+      });
+
+    UserService {
+      next_id: Mutex::new(next_id),
+      lookup_table: Mutex::new(lookup),
+      users: Mutex::new(users),
       email_client: Mutex::new(email_client),
     }
   }
+
   async fn create_new_user(&self, u: CreateNewRequest) -> ServiceResult<UserObj> {
-    if let Ok(_) = self.users.lock().await.find_id(&u.username) {
-      return Err(ServiceError::already_exist("User exist!"));
+    if self.is_alias_available(&u.alias).await {
+      return Err(ServiceError::already_exist(
+        "A megadott felhasználói név már foglalt!",
+      ));
     }
-    let new_user = user::User::new(u.username, u.name, u.email, u.phone, u.created_by)?;
+    let new_user = user::User::new(
+      *self.next_id.lock().await,
+      u.alias,
+      u.name,
+      u.email,
+      u.phone,
+      u.created_by,
+    )?;
     let user_obj: UserObj = (&new_user).into();
     self.users.lock().await.insert(new_user)?;
     Ok(user_obj)
+  }
+
+  // Check wheter an alias is available
+  // or already taken
+  async fn is_alias_available(&self, alias: &str) -> bool {
+    self.lookup_table.lock().await.get(alias).is_some()
   }
 }
 
@@ -130,13 +187,13 @@ impl protos::user::user_server::User for UserService {
     let req = request.into_inner();
 
     for user in self.users.lock().await.as_vec_mut() {
-      if user.get_user_email() == &req.userid {
+      if user.unpack().get_user_email() == &req.email {
         let new_password = user.as_mut().reset_password()?;
 
         // Send email
         let mut email_service = self.email_client.lock().await;
         email_service.send_email(EmailRequest {
-                    to: req.userid,
+                    to: req.email,
                     subject: "Elfelejtett jelszó".into(),
                     body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
                 }).await?;
@@ -173,7 +230,16 @@ impl protos::user::user_server::User for UserService {
     request: Request<LoginRequest>,
   ) -> Result<Response<LoginResponse>, Status> {
     let req = request.into_inner();
-    match self.users.lock().await.find_id(&req.username) {
+    let userid = match self.lookup_table.lock().await.get(&req.username) {
+      Some(userid) => *userid,
+      None => {
+        return Ok(Response::new(LoginResponse {
+          is_valid: false,
+          name: "".into(),
+        }))
+      }
+    };
+    match self.users.lock().await.find_id(&userid) {
       Ok(user) => {
         match password::verify_password_from_hash(&req.password, user.unpack().get_password_hash())
         {
@@ -199,20 +265,35 @@ impl protos::user::user_server::User for UserService {
       }
     };
   }
+
+  async fn lookup(
+    &self,
+    request: Request<LookupRequest>,
+  ) -> Result<Response<LookupResponse>, Status> {
+    match self
+      .lookup_table
+      .lock()
+      .await
+      .get(&request.into_inner().user_alias)
+    {
+      Some(userid) => Ok(Response::new(LookupResponse { user_id: *userid })),
+      None => Err(Status::not_found(
+        "A megadott felhasználói név nem található",
+      )),
+    }
+  }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-  let users: Mutex<VecPack<user::User>> = Mutex::new(
-    VecPack::try_load_or_init(PathBuf::from("data/users"))
-      .expect("Error while loading users storage"),
-  );
+  let users: VecPack<user::User> = VecPack::try_load_or_init(PathBuf::from("data/users"))
+    .expect("Error while loading users storage");
 
   let email_client = EmailClient::connect("http://[::1]:50053")
     .await
     .expect("Error while connecting to email service");
 
-  let user_service = UserService::new(users, email_client);
+  let user_service = UserService::init(users, email_client);
 
   let addr = "[::1]:50051".parse().unwrap();
 

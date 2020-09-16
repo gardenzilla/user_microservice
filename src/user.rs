@@ -79,8 +79,8 @@ impl TryFrom for User {
 
 impl User {
   pub fn new(
-    mut id: u32,
-    alias: String,
+    id: u32,
+    mut alias: String,
     name: String,
     mut email: String,
     phone: String,
