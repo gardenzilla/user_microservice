@@ -295,6 +295,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   let user_service = UserService::init(users, email_client);
 
+  // If db is empty
+  // create initial admin user
+  let next_id = *user_service.next_id.lock().await;
+  if next_id == 1 {
+    use std::env;
+    user_service
+      .create_new_user(CreateNewRequest {
+        alias: env::var("USER_INIT_ALIAS")?,
+        name: env::var("USER_INIT_NAME")?,
+        email: env::var("USER_INIT_EMAIL")?,
+        phone: env::var("USER_INIT_PHONE")?,
+        created_by: 1,
+      })
+      .await
+      .expect("Error while creating the init admin user");
+  }
+
   let addr = "[::1]:50051".parse().unwrap();
 
   // Create shutdown channel
