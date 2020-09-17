@@ -270,17 +270,62 @@ impl protos::user::user_server::User for UserService {
     &self,
     request: Request<LookupRequest>,
   ) -> Result<Response<LookupResponse>, Status> {
-    match self
-      .lookup_table
+    let (id, name, alias) = match &self
+      .users
       .lock()
       .await
-      .get(&request.into_inner().user_alias)
+      .find_id(&request.into_inner().user_id)
     {
-      Some(userid) => Ok(Response::new(LookupResponse { user_id: *userid })),
-      None => Err(Status::not_found(
-        "A megadott felhasználói név nem található",
-      )),
+      Ok(user) => {
+        let u = user.unpack();
+        (
+          u.get_id().to_owned(),
+          u.get_user_name().to_owned(),
+          u.get_user_alias().to_owned(),
+        )
+      }
+      Err(_) => {
+        return Err(Status::not_found(
+          "A megadott felhasználói ID nem található",
+        ))
+      }
+    };
+    Ok(Response::new(LookupResponse {
+      uid: id,
+      name: name,
+      alias: alias,
+    }))
+  }
+
+  async fn lookup_bulk(
+    &self,
+    request: Request<LookupBulkRequest>,
+  ) -> Result<Response<LookupBulkResponse>, Status> {
+    // Initial
+    // result hashmap
+    let mut res: Vec<LookupObj> = Vec::new();
+
+    // User db
+    let users = self.users.lock().await;
+
+    // Iterate over all the users
+    for uid in request.into_inner().user_ids {
+      let found_user = match &users.find_id(&uid) {
+        Ok(_user) => {
+          let _u = _user.unpack();
+          Some(LookupResult {
+            name: _u.get_user_name().to_owned(),
+            alias: _u.get_user_alias().to_owned(),
+          })
+        }
+        Err(_) => None,
+      };
+      res.push(LookupObj {
+        id: uid,
+        user_obj: found_user,
+      });
     }
+    Ok(Response::new(LookupBulkResponse { users: res }))
   }
 }
 
