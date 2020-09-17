@@ -235,7 +235,7 @@ impl protos::user::user_server::User for UserService {
       None => {
         return Ok(Response::new(LoginResponse {
           is_valid: false,
-          name: "".into(),
+          user: None,
         }))
       }
     };
@@ -246,13 +246,13 @@ impl protos::user::user_server::User for UserService {
           Ok(res) => {
             return Ok(Response::new(LoginResponse {
               is_valid: res,
-              name: user.unpack().get_user_name().into(),
+              user: Some(user.unpack().clone().into()),
             }))
           }
           Err(_) => {
             return Ok(Response::new(LoginResponse {
               is_valid: false,
-              name: "".into(),
+              user: None,
             }))
           }
         }
@@ -260,7 +260,7 @@ impl protos::user::user_server::User for UserService {
       Err(_) => {
         return Ok(Response::new(LoginResponse {
           is_valid: false,
-          name: "".into(),
+          user: None,
         }))
       }
     };
