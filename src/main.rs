@@ -4,7 +4,6 @@ use protos::email::email_client::*;
 use protos::email::*;
 use protos::user::user_server::*;
 use protos::user::*;
-use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use tokio::sync::{oneshot, Mutex};
@@ -17,8 +16,6 @@ pub mod prelude;
 pub mod user;
 
 pub struct UserService {
-  next_id: Mutex<u32>,
-  lookup_table: Mutex<HashMap<String, u32>>,
   users: Mutex<VecPack<user::User>>,
   email_client: Mutex<EmailClient<Channel>>,
 }
@@ -28,70 +25,28 @@ impl UserService {
     users: VecPack<user::User>,         // User db
     email_client: EmailClient<Channel>, // Email service client
   ) -> UserService {
-    // Define the next id
-    // Iterate over the users
-    // and fold till the biggest id
-    let next_id: u32 = users.iter().fold(0u32, |prev_id, c| {
-      let id = c.unpack().get_id();
-      if *id > prev_id {
-        // return the current id as
-        // that bigger then the previous one
-        *id
-      } else {
-        // return the previous id
-        prev_id
-      }
-    }) + 1; // biggest found ID + 1 is the next ID
-
-    // Lookup table to store
-    // user aliases
-    // Store user alias and user id
-    //            =====          ==
-    let mut lookup: HashMap<String, u32> = HashMap::new();
-
-    // Build up lookup table
-    // for aliases
-    users
-      .iter()
-      .map(|c| {
-        let c = c.unpack();
-        (c.get_user_alias().to_string(), *c.get_id())
-      })
-      .for_each(|o| {
-        let _ = lookup.insert(o.0, o.1);
-      });
-
     UserService {
-      next_id: Mutex::new(next_id),
-      lookup_table: Mutex::new(lookup),
       users: Mutex::new(users),
       email_client: Mutex::new(email_client),
     }
   }
 
   async fn create_new_user(&self, u: CreateNewRequest) -> ServiceResult<UserObj> {
-    if self.is_alias_available(&u.alias).await {
+    if self.is_id_available(&u.id).await {
       return Err(ServiceError::already_exist(
         "A megadott felhasználói név már foglalt!",
       ));
     }
-    let new_user = user::User::new(
-      *self.next_id.lock().await,
-      u.alias,
-      u.name,
-      u.email,
-      u.phone,
-      u.created_by,
-    )?;
+    let new_user = user::User::new(u.id, u.name, u.email, u.phone, u.created_by)?;
     let user_obj: UserObj = (&new_user).into();
     self.users.lock().await.insert(new_user)?;
     Ok(user_obj)
   }
 
-  // Check wheter an alias is available
+  // Check wheter an id is available
   // or already taken
-  async fn is_alias_available(&self, alias: &str) -> bool {
-    self.lookup_table.lock().await.get(alias).is_some()
+  async fn is_id_available(&self, id: &str) -> bool {
+    !self.users.lock().await.find_id(&id).is_ok()
   }
 }
 
@@ -230,16 +185,7 @@ impl protos::user::user_server::User for UserService {
     request: Request<LoginRequest>,
   ) -> Result<Response<LoginResponse>, Status> {
     let req = request.into_inner();
-    let userid = match self.lookup_table.lock().await.get(&req.username) {
-      Some(userid) => *userid,
-      None => {
-        return Ok(Response::new(LoginResponse {
-          is_valid: false,
-          user: None,
-        }))
-      }
-    };
-    match self.users.lock().await.find_id(&userid) {
+    match self.users.lock().await.find_id(&req.username) {
       Ok(user) => {
         match password::verify_password_from_hash(&req.password, user.unpack().get_password_hash())
         {
@@ -265,68 +211,6 @@ impl protos::user::user_server::User for UserService {
       }
     };
   }
-
-  async fn lookup(
-    &self,
-    request: Request<LookupRequest>,
-  ) -> Result<Response<LookupResponse>, Status> {
-    let (id, name, alias) = match &self
-      .users
-      .lock()
-      .await
-      .find_id(&request.into_inner().user_id)
-    {
-      Ok(user) => {
-        let u = user.unpack();
-        (
-          u.get_id().to_owned(),
-          u.get_user_name().to_owned(),
-          u.get_user_alias().to_owned(),
-        )
-      }
-      Err(_) => {
-        return Err(Status::not_found(
-          "A megadott felhasználói ID nem található",
-        ))
-      }
-    };
-    Ok(Response::new(LookupResponse {
-      uid: id,
-      name: name,
-      alias: alias,
-    }))
-  }
-
-  async fn lookup_bulk(
-    &self,
-    request: Request<LookupBulkRequest>,
-  ) -> Result<Response<LookupBulkResponse>, Status> {
-    // Initial
-    // result hashmap
-    let mut res: Vec<LookupObj> = Vec::new();
-
-    // User db
-    let users = self.users.lock().await;
-
-    // Iterate over all the users
-    for uid in request.into_inner().user_ids {
-      let found_user = match &users.find_id(&uid) {
-        Ok(_user) => {
-          let _u = _user.unpack();
-          Some(LookupResult {
-            name: _u.get_user_name().to_owned(),
-            alias: _u.get_user_alias().to_owned(),
-          })
-        }
-        Err(_) => None,
-      };
-      res.push(LookupObj {
-        id: uid,
-        user_obj: found_user,
-      });
-    }
-    Ok(Response::new(LookupBulkResponse { users: res }))
-  }
 }
 
 #[tokio::main]
@@ -340,18 +224,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   let user_service = UserService::init(users, email_client);
 
-  // If db is empty
-  // create initial admin user
-  let next_id = *user_service.next_id.lock().await;
-  if next_id == 1 {
+  // If user db is empty
+  // create init admin user
+  if user_service.users.lock().await.len() == 0 {
     use std::env;
     user_service
       .create_new_user(CreateNewRequest {
-        alias: env::var("USER_INIT_ALIAS")?,
+        id: env::var("USER_INIT_ID")?,
         name: env::var("USER_INIT_NAME")?,
         email: env::var("USER_INIT_EMAIL")?,
         phone: env::var("USER_INIT_PHONE")?,
-        created_by: 1,
+        created_by: env::var("USER_INIT_ID")?,
       })
       .await
       .expect("Error while creating the init admin user");

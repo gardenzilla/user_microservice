@@ -25,28 +25,26 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct User {
-  id: u32,
-  alias: String,
+  id: String,
   name: String,
   email: String,
   phone: String,
   password_hash: String,
-  date_created: i64,
-  created_by: u32,
-  customers: Vec<u32>,
+  date_created: DateTime<Utc>,
+  created_by: String,
+  customers: Vec<String>,
 }
 
 impl From<User> for UserObj {
   fn from(user: User) -> Self {
     Self {
       id: user.id,
-      alias: user.alias,
       name: user.name,
       email: user.email,
       phone: user.phone,
       customers: user.customers,
       created_by: user.created_by,
-      created_at: user.date_created,
+      created_at: user.date_created.to_rfc3339(),
     }
   }
 }
@@ -54,14 +52,13 @@ impl From<User> for UserObj {
 impl Default for User {
   fn default() -> Self {
     User {
-      id: 0,
-      alias: String::default(),
+      id: String::default(),
       name: String::default(),
       email: String::default(),
       phone: String::default(),
       password_hash: String::default(),
-      date_created: Utc::now().timestamp_millis(),
-      created_by: 0,
+      date_created: Utc::now(),
+      created_by: String::default(),
       customers: Vec::new(),
     }
   }
@@ -79,15 +76,14 @@ impl TryFrom for User {
 
 impl User {
   pub fn new(
-    id: u32,
-    mut alias: String,
+    mut id: String,
     name: String,
     mut email: String,
     phone: String,
-    created_by: u32,
+    created_by: String,
   ) -> ServiceResult<Self> {
     // Conver ID into lowercase anyway.
-    alias = alias.to_lowercase();
+    id = id.to_lowercase();
     // Convert email address into lowercase anyway.
     email = email.to_lowercase();
     // English characters, numbers and _
@@ -110,14 +106,14 @@ impl User {
     let name_max_chars: usize = 40;
     // Max email length
     // Validate User ID length
-    if alias.len() > id_max_chars || alias.len() < id_min_chars {
+    if id.len() > id_max_chars || id.len() < id_min_chars {
       return Err(BadRequest(format!(
         "A felhasználói azonosítónak minimum {} és maximum {} karakternek kell lennie",
         id_min_chars, id_max_chars
       )));
     }
     // Validate User ID characters
-    if alias
+    if id
       .chars()
       .filter(|c| !allowed_characters.contains(c))
       .count()
@@ -151,12 +147,11 @@ impl User {
 
     Ok(User {
       id,
-      alias,
       name,
       email,
       phone,
       password_hash: "".into(),
-      date_created: Utc::now().timestamp_millis(),
+      date_created: Utc::now(),
       created_by,
       // TODO: Attach default customer at initialisation process
       customers: Vec::new(),
@@ -165,25 +160,22 @@ impl User {
 }
 
 impl User {
-  pub fn get_user_id(&self) -> u32 {
-    self.id
-  }
-  pub fn get_user_alias(&self) -> &str {
-    &self.alias
+  pub fn get_user_id(&self) -> &str {
+    &self.id
   }
   // TODO: Remove this, as User ID is unmutable
-  pub fn set_user_alias(&mut self, alias: String) -> ServiceResult<()> {
-    if alias.len() <= 5 {
+  pub fn set_user_id(&mut self, id: String) -> ServiceResult<()> {
+    if id.len() <= 5 {
       Err(BadRequest(
         "A felhasználói azonosító legalább 5 karakter kell, hogy legyen".into(),
       ))
     } else {
       // Here we set ID as all lowecase
-      self.alias = alias.to_lowercase();
+      self.id = id.to_lowercase();
       Ok(())
     }
   }
-  pub fn get_date_created(&self) -> i64 {
+  pub fn get_date_created(&self) -> DateTime<Utc> {
     self.date_created
   }
   pub fn get_user_name(&self) -> &str {
@@ -226,10 +218,10 @@ impl User {
       ))
     }
   }
-  pub fn get_created_by(&self) -> u32 {
-    self.created_by
+  pub fn get_created_by(&self) -> &str {
+    &self.created_by
   }
-  pub fn get_customers(&self) -> &Vec<u32> {
+  pub fn get_customers(&self) -> &Vec<String> {
     &self.customers
   }
   pub fn get_password_hash(&self) -> &str {
@@ -278,8 +270,8 @@ impl User {
 // }
 
 impl VecPackMember for User {
-  type Out = u32;
-  fn get_id(&self) -> &u32 {
+  type Out = str;
+  fn get_id(&self) -> &str {
     &self.id
   }
   // fn try_from(from: &str) -> StorageResult<Self::ResultType> {
@@ -297,33 +289,30 @@ mod tests {
   #[test]
   fn test_user_id() {
     let mut user: User = User::new(
-      7u32,
+      "demo".into(),
       "demo".into(),
       "user".into(),
       "demo@user.com".into(),
       "".into(),
-      0u32,
     )
     .unwrap();
     // At this point ID should be None;
-    assert_eq!(user.get_user_id(), 7);
+    assert_eq!(user.get_user_id(), "demo");
     // This should return an Err(..)
     // Let's test is
     // assert_eq!(user.set_user_id("de".into()).is_err(), true);
     // Now the user should have Some("demo_user" as String) as ID.
     // Test that it's not overwritten, and all letter is lovercase
-    assert_eq!(user.get_user_alias(), "demo");
   }
 
   #[test]
   fn test_user_email() {
     let mut user: User = User::new(
-      0u32,
+      "demo".into(),
       "demo".into(),
       "user".into(),
       "demo@user.com".into(),
       "".into(),
-      0u32,
     )
     .unwrap();
 
@@ -338,12 +327,11 @@ mod tests {
   #[test]
   fn test_user_name() {
     let mut user: User = User::new(
-      0u32,
+      "demo".into(),
       "demo".into(),
       "user".into(),
       "demo@user.com".into(),
       "".into(),
-      0u32,
     )
     .unwrap();
     assert_eq!(user.get_user_name(), "user");
@@ -356,12 +344,11 @@ mod tests {
   #[test]
   fn test_user_phone() {
     let mut user: User = User::new(
-      0u32,
+      "demo".into(),
       "demo".into(),
       "user".into(),
       "demo@user.com".into(),
       "".into(),
-      0u32,
     )
     .unwrap();
     let phone_number: &str = "+99 (701) 479 397129";
@@ -374,12 +361,11 @@ mod tests {
   #[test]
   fn test_user_set_password() {
     let mut user: User = User::new(
-      0u32,
+      "demo".into(),
       "demo".into(),
       "user".into(),
       "demo@user.com".into(),
       "".into(),
-      0u32,
     )
     .unwrap();
     let password: &str = "HelloWorld749";
