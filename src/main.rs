@@ -32,7 +32,7 @@ impl UserService {
   }
 
   async fn create_new_user(&self, u: CreateNewRequest) -> ServiceResult<UserObj> {
-    if self.is_id_available(&u.id).await {
+    if !self.is_id_available(&u.id).await {
       return Err(ServiceError::already_exist(
         "A megadott felhasználói név már foglalt!",
       ));
@@ -47,6 +47,10 @@ impl UserService {
   // or already taken
   async fn is_id_available(&self, id: &str) -> bool {
     !self.users.lock().await.find_id(&id).is_ok()
+  }
+
+  async fn get_user_len(&self) -> usize {
+    self.users.lock().await.len()
   }
 }
 
@@ -224,17 +228,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
   let user_service = UserService::init(users, email_client);
 
+  let userlen = user_service.get_user_len().await;
+
   // If user db is empty
   // create init admin user
-  if user_service.users.lock().await.len() == 0 {
+  if userlen == 0 {
     use std::env;
     user_service
       .create_new_user(CreateNewRequest {
-        id: env::var("USER_INIT_ID")?,
-        name: env::var("USER_INIT_NAME")?,
-        email: env::var("USER_INIT_EMAIL")?,
-        phone: env::var("USER_INIT_PHONE")?,
-        created_by: env::var("USER_INIT_ID")?,
+        id: env::var("USER_INIT_ID").unwrap_or("demouser".into()),
+        name: env::var("USER_INIT_NAME").unwrap_or("demouser".into()),
+        email: env::var("USER_INIT_EMAIL").unwrap_or("demouser@demouser.com".into()),
+        phone: env::var("USER_INIT_PHONE").unwrap_or("...".into()),
+        created_by: env::var("USER_INIT_ID").unwrap_or("demouser".into()),
       })
       .await
       .expect("Error while creating the init admin user");

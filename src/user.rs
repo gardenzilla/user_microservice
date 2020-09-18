@@ -144,7 +144,6 @@ impl User {
         name_min_chars, name_max_chars
       )));
     }
-
     Ok(User {
       id,
       name,
