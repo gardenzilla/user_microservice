@@ -1,275 +1,285 @@
+use gzlib::proto::email::{email_client::EmailClient, EmailRequest};
+use gzlib::proto::user::user_server::*;
+use gzlib::proto::user::*;
 use packman::*;
 use prelude::*;
-use protos::email::email_client::*;
-use protos::email::*;
-use protos::user::user_server::*;
-use protos::user::*;
-use std::error::Error;
 use std::path::PathBuf;
+use std::{env, error::Error};
 use tokio::sync::{oneshot, Mutex};
 use tonic::transport::Channel;
 use tonic::{transport::Server, Request, Response, Status};
 
-pub mod convert;
-pub mod password;
-pub mod prelude;
-pub mod user;
+mod password;
+mod prelude;
+mod user;
 
-pub struct UserService {
-    users: Mutex<VecPack<user::User>>,
-    email_client: Mutex<EmailClient<Channel>>,
+struct UserService {
+  users: Mutex<VecPack<user::User>>,
+  email_client: Mutex<EmailClient<Channel>>,
 }
 
 impl UserService {
-    fn init(
-        users: VecPack<user::User>,         // User db
-        email_client: EmailClient<Channel>, // Email service client
-    ) -> UserService {
-        UserService {
-            users: Mutex::new(users),
-            email_client: Mutex::new(email_client),
-        }
+  // Init UserService with the provided
+  // db and service
+  fn init(
+    users: VecPack<user::User>,         // User db
+    email_client: EmailClient<Channel>, // Email service client
+  ) -> UserService {
+    UserService {
+      users: Mutex::new(users),
+      email_client: Mutex::new(email_client),
+    }
+  }
+  // Get next UID
+  async fn next_uid(&self) -> u32 {
+    let mut latest_id: u32 = 0;
+    self.users.lock().await.iter().for_each(|user| {
+      let uid: u32 = *user.unpack().get_id();
+      if uid > latest_id {
+        latest_id = uid;
+      }
+    });
+    latest_id + 1
+  }
+  // Check if username available
+  // username should be cleaned and in the form
+  // as we send to to create new User object
+  async fn is_username_ok(&self, username: &str) -> bool {
+    !self
+      .users
+      .lock()
+      .await
+      .iter()
+      .any(|u| u.unpack().username == username)
+  }
+  // Get stored user count
+  async fn user_count(&self) -> usize {
+    self.users.lock().await.len()
+  }
+  // Create new user
+  async fn create_user(&self, r: NewUserObj) -> ServiceResult<UserObj> {
+    // Get new UID
+    let new_uid = self.next_uid().await;
+    // Clean username
+    let username = r.username.trim().to_lowercase();
+    // Check if we can use this username
+    if !self.is_username_ok(&username).await {
+      return Err(ServiceError::already_exist(
+        "A megadott felhasználói név már foglalt!",
+      ));
+    }
+    // Create new user object
+    let new_user = user::User::new(new_uid, username, r.name, r.email, r.phone, r.created_by)?;
+    // Store new user
+    self.users.lock().await.insert(new_user.clone())?;
+    // Return new user as UserObj
+    Ok(new_user.into())
+  }
+  // Get all users
+  async fn get_all(&self) -> ServiceResult<Vec<UserObj>> {
+    // Convert all users to Vec<UserObj>
+    let res = self
+      .users
+      .lock()
+      .await
+      .iter()
+      .map(|u| u.unpack().clone().into())
+      .collect::<Vec<UserObj>>();
+    // Return UserObj vector
+    Ok(res)
+  }
+  // Get user by ID
+  async fn get_by_id(&self, r: GetByIdRequest) -> ServiceResult<UserObj> {
+    // Tries to find user
+    let res = self.users.lock().await.find_id(&r.userid)?.unpack().clone();
+    // Return it as UserObj
+    Ok(res.into())
+  }
+  // Update by ID
+  async fn update_by_id(&self, r: UserObj) -> ServiceResult<UserObj> {
+    // Tries to find and update the User
+    let res = self
+      .users
+      .lock()
+      .await
+      .find_id_mut(&r.uid)?
+      .as_mut()
+      .unpack()
+      .update(r.name, r.email, r.phone)?
+      .clone();
+    // Returns it as UserObj
+    Ok(res.into())
+  }
+  // Reset password
+  async fn reset_password(&self, r: ResetPasswordRequest) -> ServiceResult<()> {
+    for user in self.users.lock().await.as_vec_mut() {
+      if user.unpack().email == r.email {
+        let new_password = user.as_mut().reset_password()?;
+
+        // Send email
+        let mut email_service = self.email_client.lock().await;
+        email_service.send_email(EmailRequest {
+              to: r.email,
+              subject: "Elfelejtett jelszó".into(),
+              body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
+          }).await.map_err(|_| ServiceError::bad_request("Hiba az email elküldése során!"))?;
+
+        return Ok(());
+      }
     }
 
-    async fn create_new_user(&self, u: CreateNewRequest) -> ServiceResult<UserObj> {
-        if !self.is_id_available(&u.id).await {
-            return Err(ServiceError::already_exist(
-                "A megadott felhasználói név már foglalt!",
-            ));
-        }
-        let new_user = user::User::new(u.id, u.name, u.email, u.phone, u.created_by)?;
-        let user_obj: UserObj = (&new_user).into();
-        self.users.lock().await.insert(new_user)?;
-        Ok(user_obj)
-    }
-
-    // Check wheter an id is available
-    // or already taken
-    async fn is_id_available(&self, id: &str) -> bool {
-        !self.users.lock().await.find_id(&id).is_ok()
-    }
-
-    async fn get_user_len(&self) -> usize {
-        self.users.lock().await.len()
-    }
+    Err(ServiceError::bad_request(
+      "A megadott email cím nem található",
+    ))
+  }
+  // Set new password
+  async fn set_new_password(&self, r: NewPasswordRequest) -> ServiceResult<()> {
+    let mut lock = self.users.lock().await;
+    let user = lock
+      .find_id_mut(&r.uid)
+      .map_err(|e| ServiceError::from(e))?;
+    user.as_mut().unpack().set_password(r.new_password)?;
+    let u = user.unpack();
+    let mut email_service = self.email_client.lock().await;
+    email_service
+      .send_email(EmailRequest {
+        to: u.email.clone(),
+        subject: "Új jelszó beállítva".into(),
+        body: "Új jelszó lett beállítva a Gardenzilla fiókodban.".into(),
+      })
+      .await
+      .map_err(|_| ServiceError::internal_error("Hiba az email elküldésekor"))?;
+    Ok(())
+  }
+  // Tries to login
+  async fn login(&self, r: LoginRequest) -> ServiceResult<UserObj> {
+    if let Some(user) = self
+      .users
+      .lock()
+      .await
+      .iter()
+      .find(|u| u.unpack().username == r.username)
+    {
+      if password::verify_password_from_hash(&r.password, &user.unpack().password_hash)? {
+        return Ok(user.unpack().clone().into());
+      }
+    };
+    Err(ServiceError::bad_request(
+      "A megadott felhasználónév, vagy jelszó nem megfelelő!",
+    ))
+  }
 }
 
 #[tonic::async_trait]
-impl protos::user::user_server::User for UserService {
-    type GetAllStream = tokio::sync::mpsc::Receiver<Result<UserObj, Status>>;
-    async fn create_new(
-        &self,
-        request: Request<CreateNewRequest>,
-    ) -> Result<Response<CreateNewResponse>, Status> {
-        Ok(Response::new(CreateNewResponse {
-            user: Some(self.create_new_user(request.into_inner()).await?),
-        }))
-    }
-    async fn get_all(&self, _request: Request<()>) -> Result<Response<Self::GetAllStream>, Status> {
-        let users = self
-            .users
-            .lock()
-            .await
-            .into_iter()
-            .map(|i: &mut Pack<user::User>| i.unpack().into())
-            .collect::<Vec<UserObj>>();
+impl gzlib::proto::user::user_server::User for UserService {
+  async fn create_user(&self, request: Request<NewUserObj>) -> Result<Response<UserObj>, Status> {
+    let res = self.create_user(request.into_inner()).await?;
+    Ok(Response::new(res))
+  }
 
-        let (mut tx, rx) = tokio::sync::mpsc::channel(4);
+  type GetAllStream = tokio::sync::mpsc::Receiver<Result<UserObj, Status>>;
 
-        for user in users {
-            tx.send(Ok(user)).await.unwrap();
-        }
+  async fn get_all(&self, _: Request<()>) -> Result<Response<Self::GetAllStream>, Status> {
+    // Create channels
+    let (mut tx, rx) = tokio::sync::mpsc::channel(10);
+    // Get found price objects
+    let res = self.get_all().await?;
+    // Send found objects through the channel
+    for object in res.into_iter() {
+      tx.send(Ok(object))
+        .await
+        .map_err(|_| Status::internal("Error while sending price bulk over channel"))?
+    }
+    return Ok(Response::new(rx));
+  }
 
-        return Ok(Response::new(rx));
-    }
-    async fn get_by_id(
-        &self,
-        request: Request<GetByIdRequest>,
-    ) -> Result<Response<GetByIdResponse>, Status> {
-        let user: UserObj = self
-            .users
-            .lock()
-            .await
-            .find_id(&request.into_inner().userid)
-            .map_err(|_| Status::not_found("User not found"))?
-            .unpack()
-            .into();
-        let response = GetByIdResponse { user: Some(user) };
-        return Ok(Response::new(response));
-    }
-    async fn update_by_id(
-        &self,
-        request: Request<UpdateByIdRequest>,
-    ) -> Result<Response<UpdateByIdResponse>, Status> {
-        let _user: UserObj = match request.into_inner().user {
-            Some(u) => u,
-            None => return Err(Status::internal("Request has an empty user object")),
-        };
-        let mut lock = self.users.lock().await;
-        let user = match lock.find_id_mut(&_user.id) {
-            Ok(u) => u,
-            Err(err) => return Err(Status::not_found(format!("{}", err))),
-        };
-        let mut user_mut = user.as_mut();
-        let mut _user_mut = user_mut.unpack();
-        _user_mut.set_user_name(_user.name.to_string())?;
-        _user_mut.set_user_email(_user.email.to_string())?;
-        _user_mut.set_user_phone(_user.phone.to_string())?;
+  async fn get_by_id(&self, request: Request<GetByIdRequest>) -> Result<Response<UserObj>, Status> {
+    let res = self.get_by_id(request.into_inner()).await?;
+    Ok(Response::new(res))
+  }
 
-        let response = UpdateByIdResponse {
-            user: Some(_user.into()),
-        };
-        return Ok(Response::new(response));
-    }
-    async fn is_user(
-        &self,
-        request: Request<IsUserRequest>,
-    ) -> Result<Response<IsUserResponse>, Status> {
-        let is_user = match self
-            .users
-            .lock()
-            .await
-            .find_id(&request.into_inner().userid)
-        {
-            Ok(_) => true,
-            Err(_) => false,
-        };
-        let response = IsUserResponse {
-            user_exist: is_user,
-        };
-        return Ok(Response::new(response));
-    }
-    async fn reset_password(
-        &self,
-        request: Request<ResetPasswordRequest>,
-    ) -> Result<Response<ResetPasswordResponse>, Status> {
-        let req = request.into_inner();
+  async fn update_by_id(&self, request: Request<UserObj>) -> Result<Response<UserObj>, Status> {
+    let res = self.update_by_id(request.into_inner()).await?;
+    Ok(Response::new(res))
+  }
 
-        for user in self.users.lock().await.as_vec_mut() {
-            if user.unpack().get_user_email() == &req.email {
-                let new_password = user.as_mut().reset_password()?;
+  async fn reset_password(
+    &self,
+    request: Request<ResetPasswordRequest>,
+  ) -> Result<Response<ResetPasswordResponse>, Status> {
+    let _ = self.reset_password(request.into_inner()).await?;
+    Ok(Response::new(ResetPasswordResponse {}))
+  }
 
-                // Send email
-                let mut email_service = self.email_client.lock().await;
-                email_service.send_email(EmailRequest {
-                    to: req.email,
-                    subject: "Elfelejtett jelszó".into(),
-                    body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
-                }).await?;
+  async fn set_new_password(
+    &self,
+    request: Request<NewPasswordRequest>,
+  ) -> Result<Response<NewPasswordResponse>, Status> {
+    let _ = self.set_new_password(request.into_inner()).await?;
+    Ok(Response::new(NewPasswordResponse {}))
+  }
 
-                return Ok(Response::new(ResetPasswordResponse {}));
-            }
-        }
-
-        Err(Status::not_found("A megadott email cím nem található"))
-    }
-    async fn set_new_password(
-        &self,
-        request: Request<NewPasswordRequest>,
-    ) -> Result<Response<NewPasswordResponse>, Status> {
-        let req = request.into_inner();
-        let mut lock = self.users.lock().await;
-        let user = lock
-            .find_id_mut(&req.userid)
-            .map_err(|e| ServiceError::from(e))?;
-        user.as_mut().unpack().set_password(req.new_password)?;
-        let u = user.unpack();
-        let mut email_service = self.email_client.lock().await;
-        email_service
-            .send_email(EmailRequest {
-                to: u.get_user_email().into(),
-                subject: "Új jelszó beállítva".into(),
-                body: "Új jelszó lett beállítva a Gardenzilla fiókodban.".into(),
-            })
-            .await?;
-        Ok(Response::new(NewPasswordResponse {}))
-    }
-    async fn validate_login(
-        &self,
-        request: Request<LoginRequest>,
-    ) -> Result<Response<LoginResponse>, Status> {
-        let req = request.into_inner();
-        match self.users.lock().await.find_id(&req.username) {
-            Ok(user) => {
-                match password::verify_password_from_hash(
-                    &req.password,
-                    user.unpack().get_password_hash(),
-                ) {
-                    Ok(res) => {
-                        return Ok(Response::new(LoginResponse {
-                            is_valid: res,
-                            user: Some(user.unpack().clone().into()),
-                        }))
-                    }
-                    Err(_) => {
-                        return Ok(Response::new(LoginResponse {
-                            is_valid: false,
-                            user: None,
-                        }))
-                    }
-                }
-            }
-            Err(_) => {
-                return Ok(Response::new(LoginResponse {
-                    is_valid: false,
-                    user: None,
-                }))
-            }
-        };
-    }
+  async fn login(&self, request: Request<LoginRequest>) -> Result<Response<UserObj>, Status> {
+    let res = self.login(request.into_inner()).await?;
+    Ok(Response::new(res))
+  }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let users: VecPack<user::User> = VecPack::try_load_or_init(PathBuf::from("data/users"))
-        .expect("Error while loading users storage");
+  let users: VecPack<user::User> = VecPack::try_load_or_init(PathBuf::from("data/user"))
+    .expect("Error while loading user storage");
 
-    let email_client = EmailClient::connect("http://[::1]:50053")
-        .await
-        .expect("Error while connecting to email service");
+  let email_client_addr = env::var("SERVICE_ADDR_EMAIL").unwrap_or("[::1]:50053".into());
 
-    let user_service = UserService::init(users, email_client);
+  let email_client = EmailClient::connect(format!("http://{}", email_client_addr))
+    .await
+    .expect("Error while connecting to email service");
 
-    let userlen = user_service.get_user_len().await;
+  let user_service = UserService::init(users, email_client);
 
-    // If user db is empty
-    // create init admin user
-    if userlen == 0 {
-        use std::env;
-        user_service
-            .create_new_user(CreateNewRequest {
-                id: env::var("USER_INIT_ID").unwrap_or("demouser".into()),
-                name: env::var("USER_INIT_NAME").unwrap_or("demouser".into()),
-                email: env::var("USER_INIT_EMAIL").unwrap_or("demouser@demouser.com".into()),
-                phone: env::var("USER_INIT_PHONE").unwrap_or("...".into()),
-                created_by: env::var("USER_INIT_ID").unwrap_or("demouser".into()),
-            })
-            .await
-            .expect("Error while creating the init admin user");
-    }
+  let userlen = user_service.user_count().await;
 
-    let addr = "[::1]:50051".parse().unwrap();
+  // If user db is empty
+  // create init admin user
+  if userlen == 0 {
+    user_service
+      .create_user(NewUserObj {
+        username: env::var("USER_INIT_UNAME").unwrap_or("demouser".into()),
+        name: env::var("USER_INIT_NAME").unwrap_or("demouser".into()),
+        email: env::var("USER_INIT_EMAIL").unwrap_or("demouser@demouser.com".into()),
+        phone: env::var("USER_INIT_PHONE").unwrap_or("...".into()),
+        created_by: 1, // This user will have UID as 1
+      })
+      .await
+      .expect("Error while creating the init admin user");
+  }
 
-    // Create shutdown channel
-    let (tx, rx) = oneshot::channel();
+  let addr = env::var("SERVICE_ADDR_USER")
+    .unwrap_or("[::1]:50051".into())
+    .parse()
+    .unwrap();
 
-    // Spawn the server into a runtime
-    tokio::task::spawn(async move {
-        Server::builder()
-            .add_service(UserServer::new(user_service))
-            .serve_with_shutdown(addr, async {
-                let _ = rx.await;
-            })
-            .await
-            .unwrap()
-    });
+  // Create shutdown channel
+  let (tx, rx) = oneshot::channel();
 
-    tokio::signal::ctrl_c().await?;
+  // Spawn the server into a runtime
+  tokio::task::spawn(async move {
+    Server::builder()
+      .add_service(UserServer::new(user_service))
+      .serve_with_shutdown(addr, async {
+        let _ = rx.await;
+      })
+      .await
+      .unwrap()
+  });
 
-    println!("SIGINT");
+  tokio::signal::ctrl_c().await?;
 
-    // Send shutdown signal after SIGINT received
-    let _ = tx.send(());
+  println!("SIGINT");
 
-    Ok(())
+  // Send shutdown signal after SIGINT received
+  let _ = tx.send(());
+
+  Ok(())
 }

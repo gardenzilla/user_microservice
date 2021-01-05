@@ -1,3 +1,7 @@
+use gzlib::proto::user::UserObj;
+
+use crate::user;
+
 pub enum ServiceError {
   InternalError(String),
   NotFound(String),
@@ -65,5 +69,19 @@ pub type ServiceResult<T> = Result<T, ServiceError>;
 impl From<std::env::VarError> for ServiceError {
   fn from(error: std::env::VarError) -> Self {
     ServiceError::internal_error(&format!("ENV KEY NOT FOUND. {}", error))
+  }
+}
+
+impl From<user::User> for UserObj {
+  fn from(u: user::User) -> Self {
+    UserObj {
+      uid: u.uid,
+      username: u.username,
+      name: u.name,
+      email: u.email,
+      phone: u.phone,
+      created_by: u.created_by,
+      created_at: u.created_at.to_rfc3339(),
+    }
   }
 }
