@@ -1,4 +1,3 @@
-use gzlib::proto::email::{email_client::EmailClient, EmailRequest};
 use gzlib::proto::user::user_server::*;
 use gzlib::proto::user::*;
 use packman::*;
@@ -6,7 +5,6 @@ use prelude::*;
 use std::path::PathBuf;
 use std::{env, error::Error};
 use tokio::sync::{oneshot, Mutex};
-use tonic::transport::Channel;
 use tonic::{transport::Server, Request, Response, Status};
 
 mod password;
@@ -131,7 +129,6 @@ impl UserService {
       .find_id_mut(&r.uid)
       .map_err(|e| ServiceError::from(e))?;
     user.as_mut().unpack().set_password(r.new_password)?;
-    let u = user.unpack();
     Ok(())
   }
   // Tries to login
