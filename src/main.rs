@@ -15,19 +15,15 @@ mod user;
 
 struct UserService {
   users: Mutex<VecPack<user::User>>,
-  email_client: Mutex<EmailClient<Channel>>,
 }
 
 impl UserService {
   // Init UserService with the provided
   // db and service
-  fn init(
-    users: VecPack<user::User>,         // User db
-    email_client: EmailClient<Channel>, // Email service client
+  fn init(users: VecPack<user::User>, // User db
   ) -> UserService {
     UserService {
       users: Mutex::new(users),
-      email_client: Mutex::new(email_client),
     }
   }
   // Get next UID
@@ -111,20 +107,16 @@ impl UserService {
     Ok(res.into())
   }
   // Reset password
-  async fn reset_password(&self, r: ResetPasswordRequest) -> ServiceResult<()> {
+  async fn reset_password(&self, r: ResetPasswordRequest) -> ServiceResult<ResetPasswordResponse> {
     for user in self.users.lock().await.as_vec_mut() {
       if user.unpack().email == r.email {
         let new_password = user.as_mut().reset_password()?;
-
-        // Send email
-        let mut email_service = self.email_client.lock().await;
-        email_service.send_email(EmailRequest {
-              to: r.email,
-              subject: "Elfelejtett jelszó".into(),
-              body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
-          }).await.map_err(|_| ServiceError::bad_request("Hiba az email elküldése során!"))?;
-
-        return Ok(());
+        let u = user.unpack();
+        return Ok(ResetPasswordResponse {
+          uid: u.uid,
+          email: u.email.clone(),
+          new_password: new_password,
+        });
       }
     }
 
@@ -140,15 +132,6 @@ impl UserService {
       .map_err(|e| ServiceError::from(e))?;
     user.as_mut().unpack().set_password(r.new_password)?;
     let u = user.unpack();
-    let mut email_service = self.email_client.lock().await;
-    email_service
-      .send_email(EmailRequest {
-        to: u.email.clone(),
-        subject: "Új jelszó beállítva".into(),
-        body: "Új jelszó lett beállítva a Gardenzilla fiókodban.".into(),
-      })
-      .await
-      .map_err(|_| ServiceError::internal_error("Hiba az email elküldésekor"))?;
     Ok(())
   }
   // Tries to login
@@ -207,8 +190,8 @@ impl gzlib::proto::user::user_server::User for UserService {
     &self,
     request: Request<ResetPasswordRequest>,
   ) -> Result<Response<ResetPasswordResponse>, Status> {
-    let _ = self.reset_password(request.into_inner()).await?;
-    Ok(Response::new(ResetPasswordResponse {}))
+    let res = self.reset_password(request.into_inner()).await?;
+    Ok(Response::new(res))
   }
 
   async fn set_new_password(
@@ -230,13 +213,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   let users: VecPack<user::User> = VecPack::try_load_or_init(PathBuf::from("data/user"))
     .expect("Error while loading user storage");
 
-  let email_client_addr = env::var("SERVICE_ADDR_EMAIL").unwrap_or("[::1]:50053".into());
-
-  let email_client = EmailClient::connect(format!("http://{}", email_client_addr))
-    .await
-    .expect("Error while connecting to email service");
-
-  let user_service = UserService::init(users, email_client);
+  let user_service = UserService::init(users);
 
   let userlen = user_service.user_count().await;
 

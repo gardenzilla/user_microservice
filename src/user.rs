@@ -154,10 +154,9 @@ impl User {
         "A user neve legalább 5 karakter kell, hogy legyen".into(),
       ));
     }
-    if !email.contains('@') || !email.contains('.') || !email.len() > 5 {
+    if !email.contains('@') || !email.contains('.') {
       return Err(BadRequest(
-        "Rossz email formátum. Legyen legalább 5 karakter, és tartalmazzon @ jelet és pontot"
-          .into(),
+        "Rossz email formátum. Tartalmazzon @ jelet és pontot".into(),
       ));
     }
     self.name = name;
