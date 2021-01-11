@@ -165,11 +165,12 @@ impl gzlib::proto::user::user_server::User for UserService {
     // Get found price objects
     let res = self.get_all().await?;
     // Send found objects through the channel
-    for object in res.into_iter() {
-      tx.send(Ok(object))
-        .await
-        .map_err(|_| Status::internal("Error while sending price bulk over channel"))?
-    }
+    tokio::spawn(async move {
+      for ots in res.into_iter() {
+        tx.send(Ok(ots)).await.unwrap();
+      }
+    });
+
     return Ok(Response::new(rx));
   }
 
