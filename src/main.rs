@@ -1,11 +1,15 @@
-use gzlib::proto::user::user_server::*;
-use gzlib::proto::user::*;
+use gzlib::proto::{email::email_client::EmailClient, user::user_server::*};
+use gzlib::proto::{email::EmailRequest, user::*};
 use packman::*;
 use prelude::*;
 use std::path::PathBuf;
 use std::{env, error::Error};
 use tokio::sync::{oneshot, Mutex};
-use tonic::{transport::Server, Request, Response, Status};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{
+  transport::{Channel, Server},
+  Request, Response, Status,
+};
 
 mod password;
 mod prelude;
@@ -13,15 +17,19 @@ mod user;
 
 struct UserService {
   users: Mutex<VecPack<user::User>>,
+  client_email: Mutex<EmailClient<Channel>>,
 }
 
 impl UserService {
   // Init UserService with the provided
   // db and service
-  fn init(users: VecPack<user::User>, // User db
+  fn init(
+    users: VecPack<user::User>, // User db
+    client_email: EmailClient<Channel>,
   ) -> UserService {
     UserService {
       users: Mutex::new(users),
+      client_email: Mutex::new(client_email),
     }
   }
   // Get next UID
@@ -110,6 +118,16 @@ impl UserService {
       if user.unpack().email == r.email {
         let new_password = user.as_mut().reset_password()?;
         let u = user.unpack();
+
+        // Send email
+        self.client_email.lock().await.send_email(EmailRequest {
+          to: user.unpack().email.clone(),
+          subject: "Elfelejtett jelszó".into(),
+          body: format!("A Gardenzilla fiókodban töröltük a régi jelszavadat,\n és új jelszót állítottunk be.\n\n Az új jelszavad: {}", new_password),
+        })
+        .await
+        .map_err(|_| ServiceError::internal_error("Új jelszó beállítva, de hiba az email elküldésekor"))?;
+
         return Ok(ResetPasswordResponse {
           uid: u.uid,
           email: u.email.clone(),
@@ -129,6 +147,22 @@ impl UserService {
       .find_id_mut(&r.uid)
       .map_err(|e| ServiceError::from(e))?;
     user.as_mut().unpack().set_password(r.new_password)?;
+
+    // Send email
+    self
+      .client_email
+      .lock()
+      .await
+      .send_email(EmailRequest {
+        to: user.unpack().email.clone(),
+        subject: "Új jelszó beállítva".into(),
+        body: "Új jelszó lett beállítva a Gardenzilla fiókodban.".into(),
+      })
+      .await
+      .map_err(|_| {
+        ServiceError::internal_error("Új jelszó beállítva, de hiba az email elküldésekor")
+      })?;
+
     Ok(())
   }
   // Tries to login
@@ -157,7 +191,7 @@ impl gzlib::proto::user::user_server::User for UserService {
     Ok(Response::new(res))
   }
 
-  type GetAllStream = tokio::sync::mpsc::Receiver<Result<UserObj, Status>>;
+  type GetAllStream = ReceiverStream<Result<UserObj, Status>>;
 
   async fn get_all(&self, _: Request<()>) -> Result<Response<Self::GetAllStream>, Status> {
     // Create channels
@@ -171,7 +205,7 @@ impl gzlib::proto::user::user_server::User for UserService {
       }
     });
 
-    return Ok(Response::new(rx));
+    return Ok(Response::new(ReceiverStream::new(rx)));
   }
 
   async fn get_by_id(&self, request: Request<GetByIdRequest>) -> Result<Response<UserObj>, Status> {
@@ -211,7 +245,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
   let users: VecPack<user::User> = VecPack::try_load_or_init(PathBuf::from("data/user"))
     .expect("Error while loading user storage");
 
-  let user_service = UserService::init(users);
+  let client_email = EmailClient::connect(service_address("SERVICE_ADDR_EMAIL"))
+    .await
+    .expect("Could not connect to email service");
+
+  let user_service = UserService::init(users, client_email);
 
   let userlen = user_service.user_count().await;
 
